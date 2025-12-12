@@ -16,6 +16,20 @@ class MoodleIntegrationPro {
     private $order_id;
     private $product_id;
 
+    /**
+     * Devuelve la URL base de Moodle sin el endpoint del webservice.
+     */
+    private function get_moodle_base_url() {
+        return rtrim(str_replace('/webservice/rest/server.php', '', $this->moodle_url), '/');
+    }
+
+    /**
+     * Genera la URL de acceso directo a un curso de Moodle.
+     */
+    private function get_moodle_course_url($course_id) {
+        return $this->get_moodle_base_url() . '/course/view.php?id=' . intval($course_id);
+    }
+
     public function set_context($order_id, $product_id) {
         $this->order_id = $order_id;
         $this->product_id = $product_id;
@@ -271,6 +285,129 @@ class MoodleIntegrationPro {
             $this->escribir_log("❌ Error en sanitize_email_username: " . $e->getMessage());
             return 'user' . time();
         }
+    }
+
+    /**
+     * Obtiene el ID de usuario de Moodle a partir del username (NIF).
+     */
+    private function get_moodle_user_id_by_username($username) {
+        try {
+            $params = ['field' => 'username', 'values' => [$username]];
+            $result = $this->moodle_api_call('core_user_get_users_by_field', $params);
+
+            if (isset($result[0]['id'])) {
+                return intval($result[0]['id']);
+            }
+
+            return null;
+        } catch (Exception $e) {
+            $this->escribir_log("❌ Error obteniendo ID de usuario Moodle: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Devuelve los cursos en los que está matriculado un usuario de Moodle.
+     */
+    private function get_user_courses_by_username($username) {
+        $user_id = $this->get_moodle_user_id_by_username($username);
+
+        if (!$user_id) {
+            return [];
+        }
+
+        $courses = $this->moodle_api_call('core_enrol_get_users_courses', ['userid' => $user_id]);
+
+        if (isset($courses['exception'])) {
+            $this->escribir_log("❌ Error obteniendo cursos de usuario {$username}: " . json_encode($courses));
+            return [];
+        }
+
+        return is_array($courses) ? $courses : [];
+    }
+
+    /**
+     * Encuentra un producto de WooCommerce asociado a un curso de Moodle.
+     */
+    private function find_product_by_course_id($course_id) {
+        $query = new WP_Query([
+            'post_type'      => 'product',
+            'posts_per_page' => 1,
+            'meta_query'     => [
+                [
+                    'key'   => 'moodle_course_id',
+                    'value' => $course_id
+                ],
+            ],
+            'fields'         => 'ids'
+        ]);
+
+        $product_data = [
+            'id'       => null,
+            'title'    => '',
+            'category' => ''
+        ];
+
+        if (!empty($query->posts)) {
+            $product_id = $query->posts[0];
+            $product    = wc_get_product($product_id);
+
+            $product_data['id']    = $product_id;
+            $product_data['title'] = $product ? $product->get_name() : get_the_title($product_id);
+
+            $terms = wp_get_post_terms($product_id, 'product_cat');
+            if (!is_wp_error($terms) && !empty($terms)) {
+                $product_data['category'] = $terms[0]->name;
+            }
+        }
+
+        wp_reset_postdata();
+
+        return $product_data;
+    }
+
+    /**
+     * Shortcode: muestra tarjetas con los cursos de Moodle del colegiado autenticado.
+     */
+    public function render_user_courses_shortcode($atts) {
+        if (!is_user_logged_in()) {
+            return '<p>Debes iniciar sesión para ver tus cursos.</p>';
+        }
+
+        $user_id    = get_current_user_id();
+        $billing_nif = get_user_meta($user_id, 'billing_nif', true);
+
+        if (empty($billing_nif)) {
+            return '<p>No se encontró un DNI/NIF en tu perfil.</p>';
+        }
+
+        $username = $this->sanitize_nif_username($billing_nif);
+        $courses  = $this->get_user_courses_by_username($username);
+
+        if (empty($courses)) {
+            return '<p>No hemos encontrado cursos asociados a tu cuenta.</p>';
+        }
+
+        ob_start();
+        echo '<div class="moodle-course-cards" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px;">';
+
+        foreach ($courses as $course) {
+            $product_data = $this->find_product_by_course_id($course['id']);
+
+            $category = !empty($product_data['category']) ? $product_data['category'] : 'Curso Moodle';
+            $title    = !empty($product_data['title']) ? $product_data['title'] : $course['fullname'];
+            $link     = $this->get_moodle_course_url($course['id']);
+
+            echo '<div class="moodle-course-card" style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #fff;">';
+            echo '<div style="color: #8a8a8a; font-size: 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">' . esc_html($category) . '</div>';
+            echo '<div style="color: #000; font-size: 16px; font-weight: 600; margin-bottom: 12px;">' . esc_html($title) . '</div>';
+            echo '<a href="' . esc_url($link) . '" style="display: inline-block; background: #BE3A34; color: #fff; padding: 8px 14px; border-radius: 4px; text-decoration: none; font-weight: 600;">Acceder</a>';
+            echo '</div>';
+        }
+
+        echo '</div>';
+
+        return ob_get_clean();
     }
 
 // REEMPLAZAR esta función dentro de la clase MoodleIntegrationPro
@@ -947,6 +1084,7 @@ function inicializar_moodle_integration() {
     try {
         $moodle = new MoodleIntegrationPro();
         add_action('woocommerce_order_status_changed', [$moodle, 'debug_cambio_estado'], 10, 4);
+        add_shortcode('moodle_cursos_usuario', [$moodle, 'render_user_courses_shortcode']);
     } catch (Exception $e) {
         error_log("Error inicializando Moodle Integration: " . $e->getMessage());
     }
