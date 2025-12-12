@@ -182,7 +182,7 @@ class MoodleIntegrationPro {
     }
 
     // Función para enrolar usuario existente por username (NIF en minúsculas)
-    public function enroll_existing_user_by_username($username, $course_id) {
+    public function enroll_existing_user_by_username($username, $course_id, $city = '', $institution = '') {
         try {
             $this->escribir_log("🔄 Intentando enrolar usuario existente por username: {$username}");
 
@@ -191,8 +191,35 @@ class MoodleIntegrationPro {
             $result = $this->moodle_api_call('core_user_get_users_by_field', $params);
 
             if (isset($result[0]['id'])) {
-                $user_id = $result[0]['id'];
+                $user = $result[0];
+                $user_id = $user['id'];
                 $this->escribir_log("✅ Usuario encontrado con ID: {$user_id}");
+
+                $campos_actualizar = ['id' => $user_id];
+                $necesita_actualizacion = false;
+
+                if (!empty($city) && empty($user['city'])) {
+                    $campos_actualizar['city'] = $city;
+                    $necesita_actualizacion = true;
+                    $this->escribir_log("   🏙️ Ciudad vacía en Moodle, se actualizará con: {$city}");
+                }
+
+                if (!empty($institution) && empty($user['institution'])) {
+                    $campos_actualizar['institution'] = $institution;
+                    $necesita_actualizacion = true;
+                    $this->escribir_log("   🏫 Colegio vacío en Moodle, se actualizará con: {$institution}");
+                }
+
+                if ($necesita_actualizacion) {
+                    $update_result = $this->moodle_api_call('core_user_update_users', ['users' => [$campos_actualizar]]);
+
+                    if (isset($update_result['exception'])) {
+                        $this->escribir_log("❌ Error actualizando usuario existente: " . json_encode($update_result));
+                    } else {
+                        $this->escribir_log("✅ Usuario existente actualizado con ciudad/colegio");
+                    }
+                }
+
                 return $this->enroll_user_in_course($user_id, $course_id);
             }
 
@@ -247,10 +274,10 @@ class MoodleIntegrationPro {
     }
 
 // REEMPLAZAR esta función dentro de la clase MoodleIntegrationPro
-    public function create_or_enroll_user($username, $email, $firstname, $lastname, $password = null, $nombre_curso = '', $colegio = '') {
+    public function create_or_enroll_user($username, $email, $firstname, $lastname, $password = null, $nombre_curso = '', $colegio = '', $ciudad = '') {
         try {
             $this->escribir_log("🚀 Procesando usuario: {$email}");
-            
+
             $password = wp_generate_password(12, true, true);
 
             
@@ -269,7 +296,7 @@ class MoodleIntegrationPro {
             $curso_nombre = $nombre_curso;
             
             // Primero intentar enrolar usuario existente por username (DNI/NIF en Moodle)
-            $enroll_result = $this->enroll_existing_user_by_username($username, $this->course_id);
+            $enroll_result = $this->enroll_existing_user_by_username($username, $this->course_id, $ciudad, $colegio);
             
             if (isset($enroll_result['success'])) {
                 $this->escribir_log("✅ Usuario existente enrolado correctamente");
@@ -302,7 +329,7 @@ class MoodleIntegrationPro {
                 'firstname' => $firstname,
                 'lastname' => $lastname,
                 'email' => $email,
-                'city' => 'Barcelona',
+                'city' => $ciudad,
                 'country' => 'ES',
                 'lang' => 'es'
             ];
@@ -319,7 +346,7 @@ class MoodleIntegrationPro {
                 // Si falla por username duplicado, intentar enrolar (el usuario podría existir)
                 if (strpos($user_result['error'], 'username') !== false) {
                     $this->escribir_log("⚠️ Username ya existe, intentando enrolar usuario existente");
-                    $enroll_fallback = $this->enroll_existing_user_by_username($username, $this->course_id);
+                    $enroll_fallback = $this->enroll_existing_user_by_username($username, $this->course_id, $ciudad, $colegio);
                     
                     // Si el enrol funciona, enviar email de inscripción
                     if (isset($enroll_fallback['success'])) {
@@ -404,7 +431,11 @@ class MoodleIntegrationPro {
                 return;
             }
 
+            $ciudad_pedido = $order->get_billing_city();
             $colegio_pedido = $order->get_meta('school_name');
+            if (!empty($ciudad_pedido)) {
+                $this->escribir_log("🏙️ Ciudad del pedido: {$ciudad_pedido}");
+            }
             if (!empty($colegio_pedido)) {
                 $this->escribir_log("🏫 Colegio del pedido: {$colegio_pedido}");
             }
@@ -464,6 +495,7 @@ class MoodleIntegrationPro {
                             $empleado['product_id'] = $product_id;
                             $empleado['nombre_curso'] = $item->get_name();
                             $empleado['colegio'] = $colegio_pedido;
+                            $empleado['ciudad'] = $ciudad_pedido;
                             $curso_name = $item->get_name();
                             $todos_empleados[$clave_unica] = $empleado;
                             $this->escribir_log("     Nombre del curso: {$curso_name}");
@@ -498,6 +530,7 @@ class MoodleIntegrationPro {
                     $email = sanitize_email($empleado['email'] ?? '');
                     $nif = sanitize_text_field($empleado['nif'] ?? '');
                     $colegio = sanitize_text_field($empleado['colegio'] ?? '');
+                    $ciudad = sanitize_text_field($empleado['ciudad'] ?? '');
                     
                     // Validar datos
                     if (empty($nombre) || empty($apellidos) || empty($email)) {
@@ -521,12 +554,15 @@ class MoodleIntegrationPro {
                     $this->escribir_log("   📄 NIF: {$nif}");
                     $this->escribir_log("   👤 Username: {$username}");
                     $this->escribir_log("   🎯 Curso: {$this->course_id}");
+                    if (!empty($ciudad)) {
+                        $this->escribir_log("   🏙️ Ciudad: {$ciudad}");
+                    }
                     if (!empty($colegio)) {
                         $this->escribir_log("   🏫 Colegio: {$colegio}");
                     }
-                    
+
                     // Procesar empleado
-                    $result = $this->create_or_enroll_user($username, $email, $nombre, $apellidos, null, $empleado['nombre_curso'], $colegio);
+                    $result = $this->create_or_enroll_user($username, $email, $nombre, $apellidos, null, $empleado['nombre_curso'], $colegio, $ciudad);
                     
                     if (isset($result['success'])) {
                         $this->escribir_log("✅ Empleado {$email} procesado correctamente");
