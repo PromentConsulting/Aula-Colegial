@@ -374,15 +374,20 @@ class MoodleIntegrationPro {
             return '<p>Debes iniciar sesión para ver tus cursos.</p>';
         }
 
-        $user_id    = get_current_user_id();
-        $billing_nif = get_user_meta($user_id, 'billing_nif', true);
+        $user_id = get_current_user_id();
+        $wp_user = wp_get_current_user();
 
-        if (empty($billing_nif)) {
-            return '<p>No se encontró un DNI/NIF en tu perfil.</p>';
+        $wp_username = $wp_user->user_login ?? '';
+        if (empty($wp_username)) {
+            return '<p>No se encontró un username válido en tu cuenta.</p>';
         }
 
-        $username = $this->sanitize_nif_username($billing_nif);
-        $courses  = $this->get_user_courses_by_username($username);
+        $username = $this->sanitize_nif_username($wp_username);
+        if (empty($username)) {
+            return '<p>No se pudo generar un username válido para Moodle.</p>';
+        }
+
+        $courses = $this->get_user_courses_by_username($username);
 
         if (empty($courses)) {
             return '<p>No hemos encontrado cursos asociados a tu cuenta.</p>';
