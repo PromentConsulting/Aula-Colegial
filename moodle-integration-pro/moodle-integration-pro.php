@@ -250,7 +250,7 @@ class MoodleIntegrationPro {
     public function create_or_enroll_user($username, $email, $firstname, $lastname, $password = null, $nombre_curso = '', $colegio = '') {
         try {
             $this->escribir_log("🚀 Procesando usuario: {$email}");
-            
+
             $password = wp_generate_password(12, true, true);
 
             
@@ -314,17 +314,19 @@ class MoodleIntegrationPro {
 
 
             $user_result = $this->create_moodle_user($user_data);
-            
+
             if (isset($user_result['error'])) {
-                // Si falla por username duplicado, intentar enrolar (el usuario podría existir)
-                if (strpos($user_result['error'], 'username') !== false) {
-                    $this->escribir_log("⚠️ Username ya existe, intentando enrolar usuario existente");
+                // Si falla por username duplicado o error genérico de parámetros,
+                // volvemos a intentar el enrol por username antes de abortar.
+                $error_msg = $user_result['error'];
+                if (strpos($error_msg, 'username') !== false || strpos($error_msg, 'invalidparameter') !== false) {
+                    $this->escribir_log("⚠️ Creación falló (posible username existente), reintentando enrol por username");
                     $enroll_fallback = $this->enroll_existing_user_by_username($username, $this->course_id);
-                    
+
                     // Si el enrol funciona, enviar email de inscripción
                     if (isset($enroll_fallback['success'])) {
-                        $this->escribir_log("📧 Enviando email de inscripción (fallback username duplicado)");
-                        
+                        $this->escribir_log("📧 Enviando email de inscripción (fallback tras error de creación)");
+
                         ep_enviar_email_inscripcion_curso(
                             $email,
                             $firstname,
@@ -332,7 +334,7 @@ class MoodleIntegrationPro {
                             $curso_nombre
                         );
                     }
-                    
+
                     return $enroll_fallback;
                 }
                 return $user_result;
