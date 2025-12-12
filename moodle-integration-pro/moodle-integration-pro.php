@@ -181,25 +181,25 @@ class MoodleIntegrationPro {
         }
     }
 
-    // Función para enrolar usuario existente por email
-    public function enroll_existing_user_by_email($email, $course_id) {
+    // Función para enrolar usuario existente por username (NIF en minúsculas)
+    public function enroll_existing_user_by_username($username, $course_id) {
         try {
-            $this->escribir_log("🔄 Intentando enrolar usuario existente por email: {$email}");
-            
-            // Buscar por email usando core_user_get_users_by_field
-            $params = ['field' => 'email', 'values' => [$email]];
+            $this->escribir_log("🔄 Intentando enrolar usuario existente por username: {$username}");
+
+            // Buscar por username usando core_user_get_users_by_field
+            $params = ['field' => 'username', 'values' => [$username]];
             $result = $this->moodle_api_call('core_user_get_users_by_field', $params);
-            
+
             if (isset($result[0]['id'])) {
                 $user_id = $result[0]['id'];
                 $this->escribir_log("✅ Usuario encontrado con ID: {$user_id}");
                 return $this->enroll_user_in_course($user_id, $course_id);
             }
-            
-            $this->escribir_log("❌ No se pudo encontrar usuario por email");
-            return ['error' => 'Usuario no encontrado por email'];
+
+            $this->escribir_log("❌ No se pudo encontrar usuario por username");
+            return ['error' => 'Usuario no encontrado por username'];
         } catch (Exception $e) {
-            $this->escribir_log("❌ Error en enroll_existing_user_by_email: " . $e->getMessage());
+            $this->escribir_log("❌ Error en enroll_existing_user_by_username: " . $e->getMessage());
             return ['error' => $e->getMessage()];
         }
     }
@@ -250,7 +250,7 @@ class MoodleIntegrationPro {
     public function create_or_enroll_user($username, $email, $firstname, $lastname, $password = null, $nombre_curso = '', $colegio = '') {
         try {
             $this->escribir_log("🚀 Procesando usuario: {$email}");
-            
+
             $password = wp_generate_password(12, true, true);
 
             
@@ -268,8 +268,8 @@ class MoodleIntegrationPro {
             // Obtener nombre del curso para ambos tipos de email
             $curso_nombre = $nombre_curso;
             
-            // Primero intentar enrolar usuario existente
-            $enroll_result = $this->enroll_existing_user_by_email($email, $this->course_id);
+            // Primero intentar enrolar usuario existente por username (DNI/NIF en Moodle)
+            $enroll_result = $this->enroll_existing_user_by_username($username, $this->course_id);
             
             if (isset($enroll_result['success'])) {
                 $this->escribir_log("✅ Usuario existente enrolado correctamente");
@@ -314,17 +314,19 @@ class MoodleIntegrationPro {
 
 
             $user_result = $this->create_moodle_user($user_data);
-            
+
             if (isset($user_result['error'])) {
-                // Si falla por username duplicado, intentar enrolar (el usuario podría existir)
-                if (strpos($user_result['error'], 'username') !== false) {
-                    $this->escribir_log("⚠️ Username ya existe, intentando enrolar usuario existente");
-                    $enroll_fallback = $this->enroll_existing_user_by_email($email, $this->course_id);
-                    
+                // Si falla por username duplicado o error genérico de parámetros,
+                // volvemos a intentar el enrol por username antes de abortar.
+                $error_msg = $user_result['error'];
+                if (strpos($error_msg, 'username') !== false || strpos($error_msg, 'invalidparameter') !== false) {
+                    $this->escribir_log("⚠️ Creación falló (posible username existente), reintentando enrol por username");
+                    $enroll_fallback = $this->enroll_existing_user_by_username($username, $this->course_id);
+
                     // Si el enrol funciona, enviar email de inscripción
                     if (isset($enroll_fallback['success'])) {
-                        $this->escribir_log("📧 Enviando email de inscripción (fallback username duplicado)");
-                        
+                        $this->escribir_log("📧 Enviando email de inscripción (fallback tras error de creación)");
+
                         ep_enviar_email_inscripcion_curso(
                             $email,
                             $firstname,
@@ -332,7 +334,7 @@ class MoodleIntegrationPro {
                             $curso_nombre
                         );
                     }
-                    
+
                     return $enroll_fallback;
                 }
                 return $user_result;
